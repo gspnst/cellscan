@@ -160,3 +160,31 @@ def test_detect_carriers_no_edge_artifacts():
     p[np.abs(freqs - 806e6) < 4.5e6] += 25
     carriers = sweep.detect_carriers(sweep.Spectrum(freqs, p))
     assert len(carriers) == 1 and carriers[0].channel == 6300
+
+
+def test_lte_scan_wide_frequency_offset():
+    """Cheap RTL-SDRs can be ~40 ppm off (35 kHz at 806 MHz): only the widened search finds the cell."""
+
+    class OffsetSDR(FakeSDR):
+        def capture(self, freq_hz, rate, n, gain):
+            return lte_sync.synthesize([301], duration_s=n / lte_sync.FS, snr_db=8, cfo_hz=35_000, seed=9)
+
+    assert lte_scan.scan(OffsetSDR({}), [6300]) == []
+    found = lte_scan.scan(OffsetSDR({}), [6300], max_cfo_hz=50_000)
+    assert [o.pci for o in found] == [301] and "CFO +35" in found[0].notes
+
+
+def test_guided_lte_scan_cli(monkeypatch, capsys):
+    from cellscan import cli
+    from cellscan.sdr import capture
+
+    freqs = np.arange(791e6, 821e6, 100e3) + 50e3
+    p = -70 + np.random.default_rng(2).normal(0, 0.5, len(freqs))
+    p[np.abs(freqs - 806e6) < 4.5e6] += 25
+    sdr = FakeSDR({6300: [120]})
+    monkeypatch.setattr(sweep, "run_sweep", lambda *a, **k: sweep.Spectrum(freqs, p))
+    monkeypatch.setattr(capture, "open_backend", lambda *a, **k: sdr)
+    assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 0
+    assert sorted(sdr.tuned) == [6299, 6300, 6301]  # only the carrier found by the sweep was searched
+    out = capsys.readouterr().out
+    assert "806.0 MHz" in out and "120" in out

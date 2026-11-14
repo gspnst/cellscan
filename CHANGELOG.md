@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `lte-scan --guided`: sweep the band first and search only the carriers found (seconds instead of minutes).
+- `--max-cfo` for `lte-scan` and `monitor`: wider frequency-offset search for RTL-SDR dongles without TCXO.
+- SDR-only dashboard (`monitor --source none`) explains how to sweep and scan instead of waiting for a modem.
+
 ## 0.1.0
 
 First release.

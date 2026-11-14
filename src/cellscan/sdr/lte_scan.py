@@ -33,7 +33,13 @@ def candidate_earfcns(centers_mhz: Iterable[float], band: int | None = None, spr
 
 
 def scan(backend: Backend, earfcns: Iterable[int], duration_s: float = 0.03, gain: float | None = None,
-         progress: Callable[[int, int, float], None] | None = None, device: str = "sdr") -> list[Observation]:
+         progress: Callable[[int, int, float], None] | None = None, device: str = "sdr",
+         max_cfo_hz: float = 20_000) -> list[Observation]:
+    """Captures each EARFCN and runs the PSS/SSS search.
+
+    `max_cfo_hz` is the frequency-offset search range. Cheap RTL-SDR dongles without a TCXO are often
+    30–60 ppm off (25–50 kHz at 800 MHz); use 50–60 kHz for them or correct the offset with --ppm.
+    """
     earfcns = list(earfcns)
     n = int(duration_s * lte_sync.FS)
     found: dict[int, tuple[float, Observation]] = {}  # best observation per PCI
@@ -45,7 +51,7 @@ def scan(backend: Backend, earfcns: Iterable[int], duration_s: float = 0.03, gai
         if progress:
             progress(i, len(earfcns), mhz)
         x = backend.capture(mhz * 1e6, lte_sync.FS, n, gain)
-        for cell in lte_sync.cell_search(x):
+        for cell in lte_sync.cell_search(x, max_cfo_hz=max_cfo_hz):
             score = cell.pss_metric
             prev = found.get(cell.pci)
             # A cell is detectable a few raster steps off-centre; keep the strongest detection.

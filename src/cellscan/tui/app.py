@@ -198,7 +198,14 @@ class CellscanApp(App):
             self.rsrp_history = (self.rsrp_history + [lte.rsrp + 140])[-120:]
             self.query_one("#history", Sparkline).data = self.rsrp_history
         here = self.engine.position.point if self.engine.position is not None else None
-        self.query_one("#serving", Static).update(serving_panel(serving, self.gnb_bits, here))
+        if not self.engine.sources and not serving:
+            hint = "SDR-only mode (no modem source).\n\n"
+            hint += ("Press [b]s[/b] to sweep the band, then [b]l[/b] to search LTE cells on the carriers found.\n"
+                     "Decoded cells appear in the neighbour table below and in the Cells tab."
+                     if self.sweep_fn else "Start with --sdr rtlsdr|hackrf --band B20 to enable SDR scans.")
+            self.query_one("#serving", Static).update(Text.from_markup(hint))
+        else:
+            self.query_one("#serving", Static).update(serving_panel(serving, self.gnb_bits, here))
         status = Text()
         status.append("● REC " if self.engine.recording else "○ not recording ", style="bold red" if self.engine.recording else "dim")
         status.append("PAUSED " if self.paused else "", style="bold yellow")

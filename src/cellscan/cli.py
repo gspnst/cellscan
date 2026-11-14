@@ -227,7 +227,8 @@ def sdr_callbacks(args):
         lte = [c for c in carriers if c.family is Family.LTE]
         earfcns = lte_scan.candidate_earfcns([c.center_mhz for c in lte], spread=1) if lte else \
             lte_scan.earfcns_for_band(int(args.band.lstrip("Bb")), step=5) if args.band and not args.band.lower().startswith("n") else []
-        return lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr)
+        return lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr,
+                             max_cfo_hz=args.max_cfo * 1e3)
 
     return do_sweep, do_scan
 
@@ -263,7 +264,7 @@ def cmd_lte_scan(args) -> int:
     if args.iq:
         backend = capture.FileBackend(args.iq, parse_freq(args.rate))
         x = backend.capture(0, lte_sync.FS, int(max(args.duration, 0.2) * lte_sync.FS), None)
-        cells = lte_sync.cell_search(x)
+        cells = lte_sync.cell_search(x, max_cfo_hz=args.max_cfo * 1e3)
         t = Table("PCI", "N_ID_1", "N_ID_2", "CFO", "SNR", "Power", "Frame start", title=f"LTE cells in {args.iq}")
         for c in cells:
             t.add_row(str(c.pci), str(c.nid1), str(c.nid2), f"{c.cfo_hz / 1e3:+.2f} kHz", f"{c.snr_db:.1f} dB",
@@ -272,6 +273,12 @@ def cmd_lte_scan(args) -> int:
         return 0 if cells else 1
     if args.earfcn:
         earfcns = [int(e) for e in args.earfcn.split(",")]
+    elif args.band and args.guided:
+        earfcns = _guided_earfcns(args)
+        if not earfcns:
+            err.print("[yellow]The sweep found no LTE carriers in this band – try another band, more --gain, "
+                      "or a lower --threshold.[/]")
+            return 1
     elif args.band:
         earfcns = lte_scan.earfcns_for_band(int(args.band.lstrip("Bb")), args.step)
     else:
@@ -279,12 +286,32 @@ def cmd_lte_scan(args) -> int:
         return 2
     backend = capture.open_backend(args.sdr, args.ppm)
     with console.status("scanning…") as status:
-        obs = lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr,
+        obs = lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr, max_cfo_hz=args.max_cfo * 1e3,
                             progress=lambda i, n, f: status.update(f"[{i + 1}/{n}] {f:.1f} MHz"))
+    if not obs:
+        err.print("[yellow]No LTE cell decoded. If the sweep shows carriers, the SDR's frequency error is the usual "
+                  "cause: retry with --max-cfo 60 or set --ppm.[/]")
     console.print(observations_table(obs, f"LTE cells ({len(obs)})"))
     if args.save and obs:
         console.print(f"saved to {save_observations(obs, args.save, make_position(args.gps))}")
     return 0
+
+
+def _guided_earfcns(args) -> list[int]:
+    """Sweeps the band first and returns EARFCNs around the LTE carriers it finds (±1 raster step)."""
+    from .sdr import lte_scan, sweep
+
+    if args.band.lower().startswith("n"):
+        raise SystemExit("--guided works for LTE bands (B1…B88)")
+    lo, hi = sweep.band_range_hz(args.band)
+    tool = args.sdr.split(":")[0]
+    with console.status(f"sweeping {lo / 1e6:.0f}–{hi / 1e6:.0f} MHz…"):
+        spec = sweep.run_sweep(tool, lo, hi, 100_000, args.gain)
+    carriers = [c for c in sweep.detect_carriers(spec, args.threshold) if c.family is Family.LTE]
+    for c in carriers:
+        console.print(f"carrier {c.center_mhz:.1f} MHz ({c.width_mhz:g} MHz wide, {c.band_label} EARFCN {c.channel}, "
+                      f"+{c.snr_db:.0f} dB)")
+    return lte_scan.candidate_earfcns([c.center_mhz for c in carriers], band=int(args.band.lstrip("Bb")), spread=1)
 
 
 def cmd_gsm_scan(args) -> int:
@@ -491,6 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ppm", type=int, default=0)
     sp.add_argument("--threshold", type=float, default=8.0)
     sp.add_argument("--duration", type=float, default=0.03)
+    sp.add_argument("--max-cfo", type=float, default=20.0, help="LTE search frequency-offset range in kHz")
     sp.set_defaults(func=cmd_monitor)
 
     sp = sub.add_parser("sweep", help="SDR power sweep and carrier detection")
@@ -510,6 +538,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--earfcn", help="comma-separated EARFCNs")
     sp.add_argument("--step", type=int, default=1, help="EARFCN step when scanning a whole band")
     sp.add_argument("--duration", type=float, default=0.03, help="capture length per channel (s)")
+    sp.add_argument("--guided", action="store_true", help="sweep --band first and only search the carriers found (fast)")
+    sp.add_argument("--threshold", type=float, default=8.0, help="carrier detection threshold for --guided (dB)")
+    sp.add_argument("--max-cfo", type=float, default=20.0,
+                    help="frequency-offset search range in kHz (use 50-60 for RTL-SDR dongles without TCXO)")
     sp.add_argument("--iq", help="analyse an IQ recording (.cu8 .cs8 .cs16 .cf32)")
     sp.add_argument("--rate", default="1.92M", help="sample rate of --iq")
     sp.add_argument("--save", metavar="NAME")

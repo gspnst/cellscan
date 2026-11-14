@@ -87,6 +87,25 @@ cellscan lookup latest --key $OPENCELLID_KEY  # registered tower positions (opti
 Tabs: **Live** (serving cell, signal gauges, RSRP history, neighbours, findings) · **Cells** · **Events**
 (findings and the handover/technology timeline) · **Spectrum**.
 
+## SDR only (no modem, no GPS)
+
+Everything SDR-related works without a modem or GPS:
+
+```sh
+cellscan doctor                                        # is the SDR detected?
+cellscan sweep --sdr rtlsdr --band B20                 # which LTE carriers are on air (≈10 s)
+cellscan lte-scan --sdr rtlsdr --band B20 --guided     # sweep, then decode PCIs on those carriers
+cellscan monitor --source none --gps none --sdr rtlsdr --band B20   # dashboard: press s, then l
+```
+
+- **Frequency error:** RTL-SDR dongles without a TCXO are often 30–60 ppm off. If the sweep shows
+  carriers but `lte-scan` decodes nothing, add `--max-cfo 60`, or measure the error with `kal` and pass
+  `--ppm`. RTL-SDR Blog V3/V4 and HackRF with a TCXO don't need this.
+- **What the SDR can tell you about LTE:** carrier frequency and band, PCI, timing, SNR and relative
+  power. Operator, TAC and cell ID live in SIB1, which cellscan doesn't decode, so they need the modem
+  (or srsRAN tools). For GSM, `gsm-scan --tool grgsm` reads MCC/MNC/LAC/CID from broadcast.
+- **Location:** without GPS, `--gps LAT,LON` tags saved results with a fixed position, e.g. your home.
+
 ## Modem sources
 
 ```sh
