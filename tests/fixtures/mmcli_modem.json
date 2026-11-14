@@ -1,0 +1,1 @@
+{"modem":{"3gpp":{"imei":"000000000000000","operator-code":"23003","operator-name":"Vodafone CZ","registration-state":"home","packet-service-state":"attached"},"generic":{"access-technologies":["lte","5gnr"],"manufacturer":"Quectel","model":"RM502Q-AE","state":"connected","power-state":"on","signal-quality":{"recent":"yes","value":"67"},"primary-port":"cdc-wdm0"}}}

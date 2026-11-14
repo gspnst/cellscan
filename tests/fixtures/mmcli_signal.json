@@ -1,0 +1,1 @@
+{"modem":{"signal":{"5g":{"error-rate":"--","rsrp":"-101.00","rsrq":"-11.00","snr":"7.00"},"gsm":{"error-rate":"--","rssi":"--"},"lte":{"error-rate":"--","rsrp":"-95.00","rsrq":"-11.00","rssi":"-65.00","snr":"14.20"},"refresh":{"rate":"5"},"umts":{"ecio":"--","error-rate":"--","rscp":"--","rssi":"--"}}}}

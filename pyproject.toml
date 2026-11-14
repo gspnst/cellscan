@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cellscan"
+version = "0.1.0"
+description = "Terminal cell-tower analyzer for Linux: WWAN modem, GPS and SDR (passive)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "cellscan contributors" }]
+keywords = ["lte", "5g", "gsm", "sdr", "rtl-sdr", "hackrf", "modemmanager", "imsi-catcher-detection", "kali"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Security",
+]
+dependencies = [
+    "numpy>=1.24",
+    "rich>=13.0",
+    "textual>=0.60",
+]
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+cellscan = "cellscan.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/gspnst/cellscan"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cellscan"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B905"]  # pairwise zip(x, x[1:]) is intentionally unequal

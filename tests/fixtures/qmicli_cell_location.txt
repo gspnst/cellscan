@@ -1,0 +1,47 @@
+[/dev/cdc-wdm0] Successfully got cell location info
+Intrafrequency LTE Info
+	UE In Idle: 'no'
+	PLMN: '23003'
+	Tracking Area Code: '12345'
+	Global Cell ID: '26838293'
+	EUTRA Absolute RF Channel Number: '1300' (E-UTRA band 3: 1800 (DCS 1800))
+	Serving Cell ID: '301'
+	Cell Reselection Priority: '3'
+	S Non Intra Search Threshold: '8'
+	Serving Cell Low Threshold: '6'
+	S Intra Search Threshold: '62'
+	Cell [0]:
+		Physical Cell ID: '301'
+		RSRQ: '-11.2' dB
+		RSRP: '-95.3' dBm
+		RSSI: '-65.2' dBm
+		Cell Selection RX Level: '30'
+	Cell [1]:
+		Physical Cell ID: '45'
+		RSRQ: '-17.0' dB
+		RSRP: '-108.4' dBm
+		RSSI: '-80.0' dBm
+		Cell Selection RX Level: '17'
+Interfrequency LTE Info
+	UE In Idle: 'no'
+	Frequency [0]:
+		EUTRA Absolute RF Channel Number: '6300' (E-UTRA band 20: 800 (DD 800))
+		Selection RX Level Low Threshold: '6'
+		Cell Selection RX Level High Threshold: '10'
+		Cell Reselection Priority: '2'
+		Cell [0]:
+			Physical Cell ID: '120'
+			RSRQ: '-14.0' dB
+			RSRP: '-101.0' dBm
+			RSSI: '-75.0' dBm
+			Cell Selection RX Level: '22'
+LTE Info Timing Advance: '5'
+5GNR Cell Information
+	PLMN: '23003'
+	Tracking Area Code: '12345'
+	Global Cell ID: '4886718345'
+	Physical Cell ID: '455'
+	RSRQ: '-11.0' dB
+	RSRP: '-101.0' dBm
+	SNR: '7.0' dB
+NR5G ARFCN: '632628'
