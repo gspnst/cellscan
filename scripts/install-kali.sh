@@ -14,7 +14,13 @@ if [[ "${1:-}" != "--minimal" ]]; then
 fi
 
 echo "==> cellscan (pipx, with access to the system SoapySDR bindings)"
-pipx install --system-site-packages "${CELLSCAN_SOURCE:-git+https://github.com/gspnst/cellscan.git}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${CELLSCAN_SOURCE:-}" && -f "$ROOT/pyproject.toml" ]]; then
+  # Run from a clone: editable install, so `git pull` updates the installed command.
+  pipx install --force --editable --system-site-packages "$ROOT"
+else
+  pipx install --force --system-site-packages "${CELLSCAN_SOURCE:-git+https://github.com/gspnst/cellscan.git}"
+fi
 pipx ensurepath
 
 echo "==> RTL-SDR: keep the DVB-T driver from grabbing the dongle"

@@ -46,7 +46,11 @@ sudo apt install pipx modemmanager libqmi-utils gpsd gpsd-clients rtl-sdr hackrf
 pipx install --system-site-packages git+https://github.com/gspnst/cellscan.git
 ```
 
-`--system-site-packages` lets cellscan use Kali's `python3-soapysdr` bindings. Optional extras:
+`--system-site-packages` lets cellscan use Kali's `python3-soapysdr` bindings.
+
+**Updating:** if you installed from a clone with `install-kali.sh`, `git pull` is enough. A `pipx install
+git+…` install is a snapshot: update it with `pipx install --force --editable --system-site-packages .`
+from the clone, or `pipx reinstall cellscan`. `cellscan --version` shows which build is running. Optional extras:
 - `kalibrate-rtl` and `gr-gsm` from apt;
 - srsRAN 4G (`cell_search` from `lib/examples`) and LTE-Cell-Scanner, both built from source;
 - `pip install 'cellscan[serial]'` for direct AT-port access.
