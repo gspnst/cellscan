@@ -130,11 +130,52 @@ def _rotate(x: np.ndarray, cfo_hz: float, start: int = 0) -> np.ndarray:
     return (x * np.exp(-2j * np.pi * cfo_hz * n / FS)).astype(np.complex64)
 
 
-def detect_pss(x: np.ndarray, cfo_grid: np.ndarray, min_metric: float = 0.25,
-               max_per_nid2: int = 3) -> list[tuple[int, int, float, float]]:
-    """Returns [(nid2, timing within half-frame, cfo_hz, metric)] sorted by metric.
+def half_frame_period(cfo_hz: float, fc_hz: float | None) -> float:
+    """Samples per 5 ms in the capture.
 
-    Several peaks per N_ID_2 are kept (unsynchronised neighbour cells have different timing).
+    SDRs derive the LO and the sample clock from the same crystal, so a frequency offset of `cfo_hz` at
+    `fc_hz` implies a sample-rate error of -cfo/fc: at 76 ppm the PSS drifts 0.73 samples per half-frame,
+    12 samples over 80 ms – enough to smear it away if the repeats are folded at a fixed 9600 spacing.
+    """
+    if not fc_hz:
+        return float(HALF_FRAME)
+    return HALF_FRAME * (1 - cfo_hz / fc_hz)
+
+
+def occurrence_starts(timing: int, period: float, length: int) -> list[int]:
+    """Sample index of every PSS repeat in a capture of `length` samples."""
+    out, k = [], 0
+    while True:
+        t = timing + int(round(k * period))
+        if t + NFFT > length:
+            return out
+        out.append(t)
+        k += 1
+
+
+def _fold(corr: np.ndarray, period: float) -> np.ndarray:
+    """Average of the correlation over successive half-frames, following the clock drift."""
+    folded = np.zeros(HALF_FRAME)
+    k = 0
+    while True:
+        s = int(round(k * period))
+        if s + HALF_FRAME > len(corr):
+            break
+        folded += corr[s : s + HALF_FRAME]
+        k += 1
+    if k == 0:  # shorter than one half-frame of correlation output
+        folded[: len(corr)] = corr[:HALF_FRAME]
+        return folded
+    return folded / k
+
+
+def detect_pss(x: np.ndarray, cfo_grid: np.ndarray, min_metric: float = 0.25,
+               max_per_nid2: int = 3, fc_hz: float | None = None) -> list[tuple[int, int, float, float, bool]]:
+    """Returns [(nid2, timing within half-frame, cfo_hz, metric, drift)] sorted by metric.
+
+    Several peaks per N_ID_2 are kept (unsynchronised neighbour cells have different timing). With `fc_hz`
+    the half-frame folding is done twice – at a fixed 9600-sample spacing and following the sample-clock
+    drift implied by the CFO (shared LO/sample crystal) – and the stronger result is kept (`drift` flag).
     """
     periods = len(x) // HALF_FRAME
     if periods < 1:
@@ -142,15 +183,14 @@ def detect_pss(x: np.ndarray, cfo_grid: np.ndarray, min_metric: float = 0.25,
     results = []
     for nid2 in range(3):
         ref = pss_time(nid2)
-        folded_all = np.zeros((len(cfo_grid), HALF_FRAME))
+        modes = (False, True) if fc_hz else (False,)
+        folded_all = np.zeros((len(cfo_grid) * len(modes), HALF_FRAME))
         for i, cfo in enumerate(cfo_grid):
             corr = _correlate(_rotate(x, cfo), ref)
-            idx = np.arange(len(corr)) % HALF_FRAME
-            sums = np.bincount(idx, weights=corr, minlength=HALF_FRAME)
-            counts = np.bincount(idx, minlength=HALF_FRAME)
-            folded_all[i] = sums / np.maximum(counts, 1)
+            for m, drift in enumerate(modes):
+                folded_all[i * len(modes) + m] = _fold(corr, half_frame_period(float(cfo), fc_hz if drift else None))
         envelope = folded_all.max(axis=0)
-        best_cfo = folded_all.argmax(axis=0)
+        best_row = folded_all.argmax(axis=0)
         taken: list[int] = []
         for t in np.argsort(envelope)[::-1]:
             if envelope[t] < min_metric or len(taken) >= max_per_nid2:
@@ -158,7 +198,8 @@ def detect_pss(x: np.ndarray, cfo_grid: np.ndarray, min_metric: float = 0.25,
             if any(min(abs(int(t) - u), HALF_FRAME - abs(int(t) - u)) < 32 for u in taken):
                 continue
             taken.append(int(t))
-            results.append((nid2, int(t), float(cfo_grid[best_cfo[t]]), float(envelope[t])))
+            row = int(best_row[t])
+            results.append((nid2, int(t), float(cfo_grid[row // len(modes)]), float(envelope[t]), modes[row % len(modes)]))
     return sorted(results, key=lambda r: -r[3])
 
 
@@ -178,9 +219,14 @@ def _refine_cfo(x: np.ndarray, starts: list[int], nid2: int) -> float:
     return float(np.angle(acc) / (2 * np.pi * 64 / FS))
 
 
-def detect_sss(x: np.ndarray, nid2: int, timing: int) -> tuple[int, int, float, float, float, float] | None:
-    """Returns (nid1, frame_start, margin, power_dbfs, snr_db, cfo_residual) for a CFO-corrected capture."""
-    starts = [t for t in range(timing, len(x) - NFFT, HALF_FRAME) if t - NFFT - CP >= 0]
+def detect_sss(x: np.ndarray, nid2: int, timing: int | list[int]) -> tuple[int, int, float, float, float, float] | None:
+    """Returns (nid1, frame_start, margin, power_dbfs, snr_db, cfo_residual) for a CFO-corrected capture.
+
+    `timing` is the PSS position within the first half-frame, or the explicit list of PSS positions
+    (drift-corrected) in the capture.
+    """
+    positions = timing if isinstance(timing, list) else list(range(timing, len(x) - NFFT, HALF_FRAME))
+    starts = [t for t in positions if t - NFFT - CP >= 0 and t + NFFT <= len(x)]
     if not starts:
         return None
     pss_ref = pss_freq(nid2)
@@ -248,17 +294,23 @@ class Candidate:
 
 
 def candidates(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 2_500,
-               min_pss_metric: float = 0.25) -> list[Candidate]:
-    """All PSS peaks above `min_pss_metric` with their best SSS hypothesis, strongest PSS first."""
+               min_pss_metric: float = 0.25, fc_hz: float | None = None) -> list[Candidate]:
+    """All PSS peaks above `min_pss_metric` with their best SSS hypothesis, strongest PSS first.
+
+    Pass the tuned frequency `fc_hz` to compensate the sample-clock drift of SDRs with large crystal
+    errors (essential for long captures from RTL-SDR dongles without TCXO).
+    """
     x = np.asarray(x, dtype=np.complex64)
     x = x - np.mean(x)  # remove DC (common on zero-IF SDRs)
     grid = np.arange(-max_cfo_hz, max_cfo_hz + 1, cfo_step_hz)
     out: list[Candidate] = []
-    for nid2, timing, cfo, metric in detect_pss(x, grid, min_pss_metric):
+    for nid2, timing, cfo, metric, drift in detect_pss(x, grid, min_pss_metric, fc_hz=fc_hz):
+        fc = fc_hz if drift else None
         coarse = _rotate(x, cfo)
-        starts = list(range(timing, len(x) - NFFT, HALF_FRAME))
+        starts = occurrence_starts(timing, half_frame_period(cfo, fc), len(x))
         fine = cfo + _refine_cfo(coarse, starts, nid2)
-        res = detect_sss(_rotate(x, fine), nid2, timing)
+        starts = occurrence_starts(timing, half_frame_period(fine, fc), len(x))
+        res = detect_sss(_rotate(x, fine), nid2, starts)
         if res is None:
             out.append(Candidate(nid2, timing, fine, metric, None, 0.0, float("-inf"), float("-inf"), None))
             continue
@@ -280,7 +332,8 @@ def capture_stats(x: np.ndarray) -> dict[str, float]:
 
 
 def cell_search(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 2_500,
-                min_pss_metric: float = 0.25, min_sss_margin: float = 1.6, min_snr_db: float = -12.0) -> list[LTECell]:
+                min_pss_metric: float = 0.25, min_sss_margin: float = 1.6, min_snr_db: float = -12.0,
+                fc_hz: float | None = None, max_cfo_spread_hz: float = 3_000) -> list[LTECell]:
     """Finds LTE cells in a 1.92 Msps capture (ideally >= 20 ms). Strongest first.
 
     A PSS peak is only accepted when the SSS that precedes it matches one hypothesis clearly
@@ -288,8 +341,14 @@ def cell_search(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 
     timing/frequency ambiguity of Zadoff-Chu sequences.
     """
     cells: list[LTECell] = []
-    for c in candidates(x, max_cfo_hz, cfo_step_hz, min_pss_metric):
-        if c.nid1 is None or c.sss_margin < min_sss_margin or c.snr_db < min_snr_db:
+    accepted = [c for c in candidates(x, max_cfo_hz, cfo_step_hz, min_pss_metric, fc_hz=fc_hz)
+                if c.nid1 is not None and c.sss_margin >= min_sss_margin and c.snr_db >= min_snr_db]
+    accepted.sort(key=lambda c: -c.pss_metric)
+    for c in accepted:
+        # All real cells in one capture share the receiver's frequency offset (base stations are accurate to
+        # 0.05 ppm), so a candidate offset by more than a few kHz from the strongest cell is a Zadoff-Chu
+        # timing/frequency ambiguity echo of it.
+        if cells and abs(c.cfo_hz - cells[0].cfo_hz) > max_cfo_spread_hz:
             continue
         if any(cell.pci == c.pci for cell in cells):
             continue

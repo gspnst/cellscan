@@ -53,3 +53,35 @@ def test_noise_only_finds_nothing():
 def test_short_capture_rejected():
     with pytest.raises(ValueError):
         ls.cell_search(np.zeros(1000, dtype=np.complex64))
+
+
+def rtl_capture(pci, ppm, fc, duration, snr, seed):
+    """Crystal `ppm` slow: the signal appears at +ppm*fc and the sampler takes fewer samples per second."""
+    x = ls.synthesize([pci], duration_s=duration * 1.001, snr_db=snr, cfo_hz=ppm * 1e-6 * fc, seed=seed)
+    n = np.arange(len(x))
+    t = n * (1 + ppm * 1e-6)
+    t = t[t <= len(x) - 1][: int(duration * ls.FS)]
+    return (np.interp(t, n, x.real) + 1j * np.interp(t, n, x.imag)).astype(np.complex64)
+
+
+def test_sample_clock_drift_compensation():
+    # Real case: RTL-SDR ~76 ppm off (+61 kHz at 806 MHz), weak cell, 80 ms capture. Folding PSS repeats at a
+    # fixed 9600-sample spacing smears the peak (12 samples of drift); following the drift implied by the
+    # CFO recovers it.
+    fc = 806e6
+    x = rtl_capture(309, 76, fc, 0.08, -3, seed=1)
+    assert ls.cell_search(x, max_cfo_hz=70_000) == []
+    cells = ls.cell_search(x, max_cfo_hz=70_000, fc_hz=fc)
+    assert [c.pci for c in cells] == [309]
+    assert abs(cells[0].cfo_hz - 76e-6 * fc) < 1_000
+    assert ls.half_frame_period(61_256, fc) == pytest.approx(9600 * (1 - 61_256 / fc))
+
+
+def test_ambiguity_echo_rejected_by_common_cfo():
+    # Zadoff-Chu ambiguity: a strong cell also correlates with another PSS root ~120 samples earlier at a
+    # ~19 kHz different CFO, and this echo passes the SSS thresholds. Real cells share the receiver's CFO.
+    x = ls.synthesize([295], duration_s=0.03, snr_db=4.3, cfo_hz=10_053, frame_offset=11_056, seed=1018)
+    cands = ls.candidates(x, max_cfo_hz=70_000, fc_hz=806e6)
+    echoes = [c for c in cands if c.pci not in (None, 295) and c.sss_margin >= 1.6 and c.snr_db >= -12]
+    assert echoes and all(abs(e.cfo_hz - 10_053) > 3_000 for e in echoes)
+    assert [c.pci for c in ls.cell_search(x, max_cfo_hz=70_000, fc_hz=806e6)] == [295]

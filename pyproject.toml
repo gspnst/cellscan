@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cellscan"
-version = "0.1.4"
+version = "0.1.5"
 description = "Terminal cell-tower analyzer for Linux: WWAN modem, GPS and SDR (passive)"
 readme = "README.md"
 license = "MIT"

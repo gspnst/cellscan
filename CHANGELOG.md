@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5
+
+- Fix: LTE cell search failed on RTL-SDRs with large crystal errors. The LO and the sample clock share one
+  crystal, so a 76 ppm dongle (+61 kHz at 806 MHz) also drifts 0.73 samples per 5 ms – 12 samples over an
+  80 ms capture – which smeared the folded PSS peak. The search now also folds along the drift implied by
+  each frequency-offset hypothesis (keeping whichever folding is stronger). Detection holds at −6 dB SNR
+  up to 100 ppm.
+- Echo suppression: all real cells in a capture share the receiver's frequency offset, so candidates more
+  than 3 kHz away from the strongest cell are rejected as Zadoff-Chu ambiguity echoes.
+- RTL-SDR scans default to a ±70 kHz offset search (`--max-cfo`), others ±20 kHz.
+- `lte-scan --iq` uses the centre frequency from `--freq` or from `--save-iq` file names for drift compensation.
+
 ## 0.1.4
 
 - `lte-scan --debug`: per channel, the capture level (RMS, clipping, DC) and the best PSS/SSS candidates with

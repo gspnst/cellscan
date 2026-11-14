@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -216,6 +217,8 @@ def _plain_monitor(engine, interval: float) -> int:
 def sdr_callbacks(args):
     from .sdr import capture, lte_scan, sweep
 
+    default_max_cfo(args)
+
     lo, hi = sweep.band_sweep_range(args.band) if args.band else (parse_freq(args.start), parse_freq(args.stop))
     tool = args.sdr.split(":")[0]
 
@@ -259,13 +262,26 @@ def _radio_for(c):
     return {Family.GSM: Radio.GSM, Family.LTE: Radio.LTE, Family.NR: Radio.NR_SA}.get(c.family, Radio.UNKNOWN)
 
 
+def default_max_cfo(args) -> None:
+    """RTL-SDR dongles without TCXO are often 50-100 ppm off: search ±70 kHz for them, ±20 kHz otherwise."""
+    if getattr(args, "max_cfo", None) is None:
+        sdr = (getattr(args, "sdr", None) or "").lower()
+        args.max_cfo = 70.0 if sdr.startswith("rtl") or "rtlsdr" in sdr else 20.0
+
+
 def cmd_lte_scan(args) -> int:
     from .sdr import capture, lte_scan, lte_sync
+
+    default_max_cfo(args)
 
     if args.iq:
         backend = capture.FileBackend(args.iq, parse_freq(args.rate))
         x = backend.capture(0, lte_sync.FS, int(max(args.duration, 0.2) * lte_sync.FS), None)
-        cells = lte_sync.cell_search(x, max_cfo_hz=args.max_cfo * 1e3)
+        fc = parse_freq(args.freq) if args.freq else _freq_from_name(args.iq)
+        if fc is None:
+            err.print("[dim]tip: --freq 806M (the recording's centre frequency) enables sample-clock drift "
+                      "compensation for SDRs with large crystal errors[/]")
+        cells = lte_sync.cell_search(x, max_cfo_hz=args.max_cfo * 1e3, fc_hz=fc)
         t = Table("PCI", "N_ID_1", "N_ID_2", "CFO", "SNR", "Power", "Frame start", title=f"LTE cells in {args.iq}")
         for c in cells:
             t.add_row(str(c.pci), str(c.nid1), str(c.nid2), f"{c.cfo_hz / 1e3:+.2f} kHz", f"{c.snr_db:.1f} dB",
@@ -316,6 +332,12 @@ def sdr_lte_table(obs: list[Observation]) -> Table:
     return t
 
 
+def _freq_from_name(path: str) -> float | None:
+    """Centre frequency from names written by --save-iq, e.g. lte_6300_806.0MHz_1.92Msps.cf32."""
+    m = re.search(r"_(\d+(?:\.\d+)?)MHz", Path(path).name)
+    return float(m.group(1)) * 1e6 if m else None
+
+
 def _debug_capture(args):
     """Per-channel diagnostics for lte-scan: capture level and the best sync candidates, accepted or not."""
     from .sdr import lte_sync
@@ -333,11 +355,12 @@ def _debug_capture(args):
         st = lte_sync.capture_stats(x)
         line = (f"EARFCN {earfcn} {mhz:.1f} MHz: {st['samples']} samples, rms {st['rms_dbfs']:.1f} dBFS, "
                 f"clip {st['clip_pct']:.2f} %, DC {st['dc_dbfs']:.1f} dBFS")
-        cands = lte_sync.candidates(x, args.max_cfo * 1e3, min_pss_metric=0.12)[:3]
+        cands = lte_sync.candidates(x, args.max_cfo * 1e3, min_pss_metric=0.12, fc_hz=mhz * 1e6)[:3]
+        accepted = {(c.pci, round(c.cfo_hz)) for c in lte_sync.cell_search(x, args.max_cfo * 1e3, fc_hz=mhz * 1e6)}
         if not cands:
             line += " | no PSS peak ≥ 0.12"
         for c in cands:
-            verdict = "[green]accepted[/]" if (c.nid1 is not None and c.sss_margin >= 1.6 and c.snr_db >= -12) else "[yellow]rejected[/]"
+            verdict = "[green]accepted[/]" if (c.pci, round(c.cfo_hz)) in accepted else "[yellow]rejected[/]"
             sss = (f"PCI {c.pci}, SSS margin {c.sss_margin:.2f}, SNR {c.snr_db:.1f} dB" if c.nid1 is not None
                    else "no SSS")
             line += f"\n    PSS {c.pss_metric:.2f} (N_ID_2 {c.nid2}, CFO {c.cfo_hz / 1e3:+.1f} kHz) → {sss} {verdict}"
@@ -578,7 +601,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ppm", type=int, default=0)
     sp.add_argument("--threshold", type=float, default=8.0)
     sp.add_argument("--duration", type=float, default=0.03)
-    sp.add_argument("--max-cfo", type=float, default=20.0, help="LTE search frequency-offset range in kHz")
+    sp.add_argument("--max-cfo", type=float, default=None,
+                    help="LTE search frequency-offset range in kHz (default 70 for RTL-SDR, 20 otherwise)")
     sp.set_defaults(func=cmd_monitor)
 
     sp = sub.add_parser("sweep", help="SDR power sweep and carrier detection")
@@ -600,12 +624,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--duration", type=float, default=0.03, help="capture length per channel (s)")
     sp.add_argument("--guided", action="store_true", help="sweep --band first and only search the carriers found (fast)")
     sp.add_argument("--threshold", type=float, default=8.0, help="carrier detection threshold for --guided (dB)")
-    sp.add_argument("--max-cfo", type=float, default=20.0,
-                    help="frequency-offset search range in kHz (use 50-60 for RTL-SDR dongles without TCXO)")
+    sp.add_argument("--max-cfo", type=float, default=None,
+                    help="frequency-offset search range in kHz (default 70 for RTL-SDR, 20 otherwise)")
     sp.add_argument("--debug", action="store_true", help="print capture level and sync candidates per channel")
     sp.add_argument("--save-iq", metavar="DIR", help="save each capture as .cf32 (1.92 Msps) for offline analysis")
     sp.add_argument("--iq", help="analyse an IQ recording (.cu8 .cs8 .cs16 .cf32)")
     sp.add_argument("--rate", default="1.92M", help="sample rate of --iq")
+    sp.add_argument("--freq", help="centre frequency of --iq (enables clock-drift compensation; read from "
+                                   "--save-iq file names automatically)")
     sp.add_argument("--save", metavar="NAME")
     sp.add_argument("--gps", default="none")
     sp.set_defaults(func=cmd_lte_scan)

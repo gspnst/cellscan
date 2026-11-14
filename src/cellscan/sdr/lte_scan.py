@@ -56,7 +56,7 @@ def scan(backend: Backend, earfcns: Iterable[int], duration_s: float = 0.03, gai
         x = backend.capture(mhz * 1e6, lte_sync.FS, n, gain)
         if on_capture:
             on_capture(earfcn, mhz, x)
-        for cell in lte_sync.cell_search(x, max_cfo_hz=max_cfo_hz):
+        for cell in lte_sync.cell_search(x, max_cfo_hz=max_cfo_hz, fc_hz=mhz * 1e6):
             score = cell.pss_metric
             prev = found.get(cell.pci)
             # A cell is detectable a few raster steps off-centre; keep the strongest detection.

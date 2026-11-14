@@ -1,3 +1,3 @@
 """cellscan – passive cell-tower analyzer for Linux terminals (WWAN modem, GPS, SDR)."""
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"

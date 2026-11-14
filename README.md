@@ -104,9 +104,10 @@ cellscan monitor --source none --gps none --sdr rtlsdr --band B20   # dashboard:
 
 - **Band sweeps** cover the band plus a few MHz on each side, because carrier detection needs some unused
   spectrum to estimate the noise floor.
-- **Frequency error:** RTL-SDR dongles without a TCXO are often 30–60 ppm off. If the sweep shows
-  carriers but `lte-scan` decodes nothing, add `--max-cfo 60`, or measure the error with `kal` and pass
-  `--ppm`. RTL-SDR Blog V3/V4 and HackRF with a TCXO don't need this.
+- **Frequency error:** RTL-SDR dongles without a TCXO are often 50–100 ppm off. RTL-SDR scans therefore
+  search ±70 kHz by default and compensate the matching sample-clock drift. For best sensitivity, measure
+  the error once with `rtl_test -p` (let it run 2–3 minutes and read the cumulative PPM) and pass it as
+  `--ppm`. `lte-scan --debug` shows what the detector sees on each channel.
 - **What the SDR can tell you about LTE:** carrier frequency and band, PCI, timing, SNR and relative
   power. Operator, TAC and cell ID live in SIB1, which cellscan doesn't decode, so they need the modem
   (or srsRAN tools). For GSM, `gsm-scan --tool grgsm` reads MCC/MNC/LAC/CID from broadcast.
@@ -158,13 +159,16 @@ covers LTE only).
 ### How the built-in LTE cell search works
 
 1. Captures 30 ms of complex baseband at 1.92 Msps, centred on the EARFCN.
-2. Correlates against the three PSS Zadoff-Chu replicas (TS 36.211 §6.11.1) over a ±20 kHz frequency
-   offset grid, averaging over the 5 ms half-frames → N_ID_2, timing, coarse CFO.
+2. Correlates against the three PSS Zadoff-Chu replicas (TS 36.211 §6.11.1) over a frequency-offset grid
+   (±20 kHz, ±70 kHz for RTL-SDR), averaging over the 5 ms half-frames → N_ID_2, timing, coarse CFO.
+   The averaging also follows the sample-clock drift implied by each offset, since an SDR's LO and
+   sample clock share one crystal.
 3. Refines the CFO from the phase drift across the PSS.
 4. Takes the SSS symbol before each PSS and equalises it with a smoothed PSS channel estimate
    (maximum-ratio combining). Tests all 168 N_ID_1 values × subframe 0/5 → N_ID_1 and frame timing.
-5. Accepts a cell only when the SSS decision is unambiguous and fits after equalisation. This rejects
-   PSS sidelobes and the Zadoff-Chu timing/frequency ambiguity.
+5. Accepts a cell only when the SSS decision is unambiguous and fits after equalisation, and when its
+   frequency offset matches the strongest cell's (all real cells share the receiver's offset). This
+   rejects PSS sidelobes and Zadoff-Chu timing/frequency ambiguity echoes.
 
 In synthetic tests it detected 40/40 random cells at 0–10 dB SNR with ±15 kHz offsets, with no false
 PCIs, and it separates unsynchronised cells down to −6 dB relative power. It decodes **no** further
