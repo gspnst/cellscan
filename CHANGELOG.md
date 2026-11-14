@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Fix: `lte-scan --guided` and `sweep --band` found no carriers when LTE filled the whole band (e.g. B20 in
+  Europe), because the noise floor was estimated on the carriers themselves. Band sweeps now include a
+  margin of spectrum on both sides, and the floor uses the 10th percentile.
+- Adjacent carriers that merge into one wide block are split at power dips; gap-less blocks are tiled with
+  every fitting LTE width so the guided scan still tries the right centres.
+- When the guided sweep finds nothing it prints the spectrum and min/median/max power to help diagnose
+  antenna or gain problems.
+
 ## 0.1.1
 
 - `lte-scan --guided`: sweep the band first and search only the carriers found (seconds instead of minutes).

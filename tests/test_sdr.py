@@ -188,3 +188,68 @@ def test_guided_lte_scan_cli(monkeypatch, capsys):
     assert sorted(sdr.tuned) == [6299, 6300, 6301]  # only the carrier found by the sweep was searched
     out = capsys.readouterr().out
     assert "806.0 MHz" in out and "120" in out
+
+
+def rtl_power_like(start, stop, carriers, seed=0, hop=2.0e6):
+    """Sweep resembling rtl_power output: carriers with load ripple, hop-edge roll-off and DC spikes."""
+    rng = np.random.default_rng(seed)
+    freqs = np.arange(start, stop, 100e3) + 50e3
+    p = -72.0 + rng.normal(0, 0.8, len(freqs))
+    for center, level in carriers:
+        occ = np.abs(freqs - center) < 4.5e6
+        p[occ] = np.maximum(p[occ], level + rng.normal(0, 1.8, occ.sum()))
+    pos = (freqs - start) % hop
+    p -= np.where((pos < 0.15e6) | (pos > hop - 0.15e6), 3.0, 0.0)
+    p += np.where(np.abs(pos - hop / 2) < 0.06e6, 4.0, 0.0)
+    return sweep.Spectrum(freqs, p)
+
+
+B20_FULL = [(796e6, -42), (806e6, -47), (816e6, -53)]  # three operators filling 791-821 MHz
+
+
+def test_fully_occupied_band_needs_margin():
+    lo, hi = sweep.band_sweep_range("B20")
+    assert lo < 791e6 and hi > 821e6
+    found = sweep.detect_carriers(rtl_power_like(lo, hi, B20_FULL), mcc=230, within_hz=sweep.band_range_hz("B20"))
+    assert sorted(c.channel for c in found) == [6200, 6300, 6400]
+    assert all(c.width_mhz == 10 and not c.kind.endswith("?") for c in found)
+
+
+def test_gapless_block_is_tiled_with_all_layouts():
+    lo, hi = sweep.band_sweep_range("B20")
+    freqs = np.arange(lo, hi, 100e3) + 50e3
+    p = -72 + np.random.default_rng(1).normal(0, 0.8, len(freqs))
+    p[(freqs > 791e6) & (freqs < 821e6)] = -45
+    found = sweep.detect_carriers(sweep.Spectrum(freqs, p), within_hz=sweep.band_range_hz("B20"))
+    candidates = set(lte_scan.candidate_earfcns([c.center_mhz for c in found], band=20, spread=1))
+    assert {6200, 6300, 6400} <= candidates  # 3 x 10 MHz layout covered
+    assert all(c.kind.endswith("?") for c in found)
+
+
+def test_guided_scan_on_full_band(monkeypatch, capsys):
+    from cellscan import cli
+    from cellscan.sdr import capture
+
+    swept = {}
+
+    def fake_run_sweep(tool, lo, hi, bin_hz, gain):
+        swept["range"] = (lo, hi)
+        return rtl_power_like(lo, hi, B20_FULL, seed=4)
+
+    sdr = FakeSDR({6200: [33], 6300: [120], 6400: [401]})
+    monkeypatch.setattr(sweep, "run_sweep", fake_run_sweep)
+    monkeypatch.setattr(capture, "open_backend", lambda *a, **k: sdr)
+    assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 0
+    assert swept["range"][0] < 791e6 and swept["range"][1] > 821e6
+    assert sorted(sdr.tuned) == [6199, 6200, 6201, 6299, 6300, 6301, 6399, 6400, 6401]
+    out = capsys.readouterr().out
+    assert all(str(p) in out for p in (33, 120, 401))
+
+
+def test_guided_scan_reports_flat_spectrum(monkeypatch, capsys):
+    from cellscan import cli
+
+    monkeypatch.setattr(sweep, "run_sweep", lambda tool, lo, hi, b, g: rtl_power_like(lo, hi, [], seed=5))
+    assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 1
+    captured = capsys.readouterr()
+    assert "flat spectrum" in captured.out and "no LTE carriers" in captured.err

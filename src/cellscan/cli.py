@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 from rich.console import Console
 from rich.table import Table
 
@@ -215,7 +216,7 @@ def _plain_monitor(engine, interval: float) -> int:
 def sdr_callbacks(args):
     from .sdr import capture, lte_scan, sweep
 
-    lo, hi = sweep.band_range_hz(args.band) if args.band else (parse_freq(args.start), parse_freq(args.stop))
+    lo, hi = sweep.band_sweep_range(args.band) if args.band else (parse_freq(args.start), parse_freq(args.stop))
     tool = args.sdr.split(":")[0]
 
     def do_sweep():
@@ -237,7 +238,7 @@ def cmd_sweep(args) -> int:
     from .sdr import sweep
     from .tui.app import spectrum_text
 
-    lo, hi = sweep.band_range_hz(args.band) if args.band else (parse_freq(args.start), parse_freq(args.stop))
+    lo, hi = sweep.band_sweep_range(args.band) if args.band else (parse_freq(args.start), parse_freq(args.stop))
     if args.csv:
         spec = sweep.parse_power_csv(Path(args.csv).read_text())
     else:
@@ -298,19 +299,28 @@ def cmd_lte_scan(args) -> int:
 
 
 def _guided_earfcns(args) -> list[int]:
-    """Sweeps the band first and returns EARFCNs around the LTE carriers it finds (±1 raster step)."""
+    """Sweeps the band (plus a margin for the noise floor) and returns EARFCNs around its LTE carriers."""
     from .sdr import lte_scan, sweep
+    from .tui.app import spectrum_text
 
     if args.band.lower().startswith("n"):
         raise SystemExit("--guided works for LTE bands (B1…B88)")
-    lo, hi = sweep.band_range_hz(args.band)
+    band = sweep.band_range_hz(args.band)
+    lo, hi = sweep.band_sweep_range(args.band)
     tool = args.sdr.split(":")[0]
-    with console.status(f"sweeping {lo / 1e6:.0f}–{hi / 1e6:.0f} MHz…"):
+    with console.status(f"sweeping {lo / 1e6:.1f}–{hi / 1e6:.1f} MHz…"):
         spec = sweep.run_sweep(tool, lo, hi, 100_000, args.gain)
-    carriers = [c for c in sweep.detect_carriers(spec, args.threshold) if c.family is Family.LTE]
+    carriers = [c for c in sweep.detect_carriers(spec, args.threshold, within_hz=band) if c.family is Family.LTE]
     for c in carriers:
+        guess = " (layout guessed – no gaps visible)" if c.kind.endswith("?") else ""
         console.print(f"carrier {c.center_mhz:.1f} MHz ({c.width_mhz:g} MHz wide, {c.band_label} EARFCN {c.channel}, "
-                      f"+{c.snr_db:.0f} dB)")
+                      f"+{c.snr_db:.0f} dB){guess}")
+    if not carriers:
+        console.print(spectrum_text(spec, sweep.detect_carriers(spec, args.threshold), width=min(console.width - 2, 120)))
+        p = spec.power_db
+        console.print(f"[dim]sweep: {len(p)} bins, min {p.min():.1f} dB, median {float(np.median(p)):.1f} dB, "
+                      f"max {p.max():.1f} dB – a flat spectrum (max − median < {args.threshold:.0f} dB) means nothing "
+                      f"strong was received: check antenna, --gain 40, or another band.[/]")
     return lte_scan.candidate_earfcns([c.center_mhz for c in carriers], band=int(args.band.lstrip("Bb")), spread=1)
 
 

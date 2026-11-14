@@ -103,17 +103,28 @@ def run_sweep(tool: str, start_hz: float, stop_hz: float, bin_hz: float = 100_00
 _LTE_WIDTHS = (1.4, 3, 5, 10, 15, 20)
 
 
-def detect_carriers(spec: Spectrum, threshold_db: float = 8.0, mcc: int | None = None) -> list[Carrier]:
-    """Finds occupied channels: segments above (noise floor + threshold), classified by width."""
+def _smooth(p: np.ndarray, k: int) -> np.ndarray:
+    """Moving average without zero-padding artefacts at the edges."""
+    return np.convolve(np.pad(p, k // 2, mode="edge"), np.ones(k) / k, mode="valid")[: len(p)]
+
+
+def detect_carriers(spec: Spectrum, threshold_db: float = 8.0, mcc: int | None = None,
+                    within_hz: tuple[float, float] | None = None) -> list[Carrier]:
+    """Finds occupied channels: segments above (noise floor + threshold), classified by width.
+
+    The noise floor is the 10th percentile of the sweep, so the sweep should include some unused
+    spectrum (use `band_sweep_range`, which adds a margin around the band). Adjacent carriers that merge
+    into one block wider than 21 MHz are split at power dips, or tiled with standard LTE widths.
+    `within_hz` keeps only carriers whose centre lies in that range.
+    """
     p = spec.power_db
     if len(p) < 5:
         return []
-    k = 3
-    smooth = np.convolve(np.pad(p, k // 2, mode="edge"), np.ones(k) / k, mode="valid")  # no zero-padding at edges
-    floor = float(np.percentile(smooth, 20))
+    smooth = _smooth(p, 3)
+    floor = float(np.percentile(smooth, 10))
     above = smooth > floor + threshold_db
     bin_mhz = spec.bin_hz / 1e6
-    max_gap = max(1, int(0.3 / bin_mhz)) if bin_mhz > 0 else 1  # bridge notches < 300 kHz (e.g. DC)
+    max_gap = max(1, int(0.3 / bin_mhz)) if bin_mhz > 0 else 1  # bridge notches < 300 kHz (e.g. DC, hop edges)
     mask = above.copy()
     on = np.flatnonzero(mask)
     for a, b in zip(on, on[1:]):
@@ -121,17 +132,70 @@ def detect_carriers(spec: Spectrum, threshold_db: float = 8.0, mcc: int | None =
             mask[a:b] = True
     edges = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
     segments = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1))
+
     carriers = []
     for a, b in segments:
-        f_lo = spec.freqs_hz[a] - spec.bin_hz / 2
-        f_hi = spec.freqs_hz[b] + spec.bin_hz / 2
-        width = (f_hi - f_lo) / 1e6
-        center = (f_lo + f_hi) / 2e6
-        peak = float(p[a : b + 1].max())
-        if peak - floor < threshold_db:
+        for lo_hz, hi_hz, tiled in _split_wide(spec, smooth, int(a), int(b)):
+            width = (hi_hz - lo_hz) / 1e6
+            center = (lo_hz + hi_hz) / 2e6
+            sel = (spec.freqs_hz >= lo_hz) & (spec.freqs_hz <= hi_hz)
+            peak = float(p[sel].max()) if sel.any() else float(p[a : b + 1].max())
+            if peak - floor < threshold_db:
+                continue
+            if within_hz and not within_hz[0] <= center * 1e6 <= within_hz[1]:
+                continue
+            c = classify(center, width, peak, peak - floor, mcc)
+            if tiled:
+                c.kind += "?"  # guessed from a gap-less block: one of several possible carrier layouts
+            carriers.append(c)
+    return sorted(carriers, key=lambda c: (c.kind.endswith("?"), -c.peak_db))
+
+
+def _split_wide(spec: Spectrum, smooth: np.ndarray, a: int, b: int) -> list[tuple[float, float, bool]]:
+    """Splits a segment wider than one LTE carrier at internal dips.
+
+    A block without visible gaps is ambiguous (30 MHz may be 3×10 or 2×15 MHz), so it is tiled with every
+    standard LTE width that fits; the guided LTE scan then tries all of those centres.
+    """
+    half = spec.bin_hz / 2
+    lo, hi = spec.freqs_hz[a] - half, spec.freqs_hz[b] + half
+    if (hi - lo) / 1e6 <= 21 or b - a < 10:
+        return [(lo, hi, False)]
+    seg = _smooth(smooth[a : b + 1], 5)
+    dip = seg < np.median(seg) - 6
+    dip[:3] = dip[-3:] = False
+    pieces, start, i = [], 0, 0
+    while i < len(dip):
+        if dip[i]:
+            j = i
+            while j + 1 < len(dip) and dip[j + 1]:
+                j += 1
+            if j - i + 1 >= 3:  # >= 300 kHz guard gap between carriers
+                pieces.append((start, i - 1))
+                start = j + 1
+            i = j + 1
+        else:
+            i += 1
+    pieces.append((start, len(dip) - 1))
+    out: list[tuple[float, float, bool]] = []
+    for s_i, e_i in pieces:
+        p_lo, p_hi = spec.freqs_hz[a + s_i] - half, spec.freqs_hz[a + e_i] + half
+        width = (p_hi - p_lo) / 1e6
+        if width <= 21:
+            out.append((p_lo, p_hi, False))
             continue
-        carriers.append(classify(center, width, peak, peak - floor, mcc))
-    return sorted(carriers, key=lambda c: -c.peak_db)
+        widths = [w for w in (20, 15, 10, 5) if abs(width / w - round(width / w)) < 0.15] or [10]
+        seen: list[float] = []
+        for w in widths:
+            n = max(1, round(width / w))
+            tile = (p_hi - p_lo) / n
+            for k in range(n):
+                t_lo, t_hi = p_lo + k * tile, p_lo + (k + 1) * tile
+                centre = (t_lo + t_hi) / 2
+                if all(abs(centre - c) > 150e3 for c in seen):
+                    seen.append(centre)
+                    out.append((t_lo, t_hi, True))
+    return out
 
 
 def classify(center_mhz: float, width_mhz: float, peak_db: float, snr_db: float, mcc: int | None = None) -> Carrier:
@@ -160,6 +224,13 @@ def classify(center_mhz: float, width_mhz: float, peak_db: float, snr_db: float,
         if nr:
             c.family, c.channel, c.band_label = Family.NR, arfcn, f"n{nr.number}"
     return c
+
+
+def band_sweep_range(label: str, margin_mhz: float | None = None) -> tuple[float, float]:
+    """Band downlink range plus a margin of unused spectrum on both sides for the noise-floor estimate."""
+    lo, hi = band_range_hz(label)
+    margin = (margin_mhz if margin_mhz is not None else max(5.0, min(15.0, 0.25 * (hi - lo) / 1e6))) * 1e6
+    return max(lo - margin, 24e6), hi + margin
 
 
 def band_range_hz(label: str) -> tuple[float, float]:

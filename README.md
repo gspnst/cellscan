@@ -102,6 +102,8 @@ cellscan lte-scan --sdr rtlsdr --band B20 --guided     # sweep, then decode PCIs
 cellscan monitor --source none --gps none --sdr rtlsdr --band B20   # dashboard: press s, then l
 ```
 
+- **Band sweeps** cover the band plus a few MHz on each side, because carrier detection needs some unused
+  spectrum to estimate the noise floor.
 - **Frequency error:** RTL-SDR dongles without a TCXO are often 30–60 ppm off. If the sweep shows
   carriers but `lte-scan` decodes nothing, add `--max-cfo 60`, or measure the error with `kal` and pass
   `--ppm`. RTL-SDR Blog V3/V4 and HackRF with a TCXO don't need this.
