@@ -228,6 +228,57 @@ def detect_sss(x: np.ndarray, nid2: int, timing: int) -> tuple[int, int, float, 
     return nid1, int(frame_start), margin, float(power_dbfs), float(snr), 0.0
 
 
+@dataclass
+class Candidate:
+    """A PSS peak and the SSS decision for it, before acceptance thresholds (for diagnostics)."""
+
+    nid2: int
+    timing: int
+    cfo_hz: float
+    pss_metric: float
+    nid1: int | None
+    sss_margin: float
+    snr_db: float
+    power_dbfs: float
+    frame_start: int | None
+
+    @property
+    def pci(self) -> int | None:
+        return None if self.nid1 is None else 3 * self.nid1 + self.nid2
+
+
+def candidates(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 2_500,
+               min_pss_metric: float = 0.25) -> list[Candidate]:
+    """All PSS peaks above `min_pss_metric` with their best SSS hypothesis, strongest PSS first."""
+    x = np.asarray(x, dtype=np.complex64)
+    x = x - np.mean(x)  # remove DC (common on zero-IF SDRs)
+    grid = np.arange(-max_cfo_hz, max_cfo_hz + 1, cfo_step_hz)
+    out: list[Candidate] = []
+    for nid2, timing, cfo, metric in detect_pss(x, grid, min_pss_metric):
+        coarse = _rotate(x, cfo)
+        starts = list(range(timing, len(x) - NFFT, HALF_FRAME))
+        fine = cfo + _refine_cfo(coarse, starts, nid2)
+        res = detect_sss(_rotate(x, fine), nid2, timing)
+        if res is None:
+            out.append(Candidate(nid2, timing, fine, metric, None, 0.0, float("-inf"), float("-inf"), None))
+            continue
+        nid1, frame_start, margin, power, snr, _ = res
+        out.append(Candidate(nid2, timing, fine, metric, nid1, margin, snr, power, frame_start))
+    return out
+
+
+def capture_stats(x: np.ndarray) -> dict[str, float]:
+    """Level, clipping and DC of a capture – the first things to check when nothing is decoded."""
+    x = np.asarray(x, dtype=np.complex64)
+    if len(x) == 0:
+        return {"samples": 0, "rms_dbfs": float("-inf"), "clip_pct": 0.0, "dc_dbfs": float("-inf")}
+    rms = float(np.sqrt(np.mean(np.abs(x) ** 2)))
+    clip = float(np.mean((np.abs(x.real) >= 0.99) | (np.abs(x.imag) >= 0.99)) * 100)
+    dc = float(np.abs(np.mean(x)))
+    return {"samples": len(x), "rms_dbfs": 20 * np.log10(max(rms, 1e-9)), "clip_pct": clip,
+            "dc_dbfs": 20 * np.log10(max(dc, 1e-9))}
+
+
 def cell_search(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 2_500,
                 min_pss_metric: float = 0.25, min_sss_margin: float = 1.6, min_snr_db: float = -12.0) -> list[LTECell]:
     """Finds LTE cells in a 1.92 Msps capture (ideally >= 20 ms). Strongest first.
@@ -236,25 +287,14 @@ def cell_search(x: np.ndarray, max_cfo_hz: float = 20_000, cfo_step_hz: float = 
     (margin) and fits well after equalisation (SNR); this rejects PSS sidelobes and the
     timing/frequency ambiguity of Zadoff-Chu sequences.
     """
-    x = np.asarray(x, dtype=np.complex64)
-    x = x - np.mean(x)  # remove DC (common on zero-IF SDRs)
-    grid = np.arange(-max_cfo_hz, max_cfo_hz + 1, cfo_step_hz)
     cells: list[LTECell] = []
-    for nid2, timing, cfo, metric in detect_pss(x, grid, min_pss_metric):
-        coarse = _rotate(x, cfo)
-        starts = list(range(timing, len(x) - NFFT, HALF_FRAME))
-        fine = cfo + _refine_cfo(coarse, starts, nid2)
-        corrected = _rotate(x, fine)
-        res = detect_sss(corrected, nid2, timing)
-        if res is None:
+    for c in candidates(x, max_cfo_hz, cfo_step_hz, min_pss_metric):
+        if c.nid1 is None or c.sss_margin < min_sss_margin or c.snr_db < min_snr_db:
             continue
-        nid1, frame_start, margin, power, snr, _ = res
-        if margin < min_sss_margin or snr < min_snr_db:
+        if any(cell.pci == c.pci for cell in cells):
             continue
-        pci = 3 * nid1 + nid2
-        if any(c.pci == pci for c in cells):
-            continue
-        cells.append(LTECell(pci, nid1, nid2, frame_start, fine, metric, margin, power, snr))
+        cells.append(LTECell(c.pci, c.nid1, c.nid2, c.frame_start, c.cfo_hz, c.pss_metric, c.sss_margin,  # type: ignore[arg-type]
+                             c.power_dbfs, c.snr_db))
     return sorted(cells, key=lambda c: -c.power_dbfs)
 
 

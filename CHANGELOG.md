@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+- `lte-scan --debug`: per channel, the capture level (RMS, clipping, DC) and the best PSS/SSS candidates with
+  why each was accepted or rejected – to diagnose "no LTE cell decoded" on real hardware.
+- `lte-scan --save-iq DIR`: keep each capture as .cf32 for offline analysis (`lte-scan --iq FILE`).
+- Compact results table for SDR LTE scans.
+- Verified: detection tolerates combined LO and sample-clock error up to 80 ppm (`--max-cfo 70`).
+
 ## 0.1.3
 
 - Fix: rtl_power's DC spike at the centre of every hop (every ~2.6 MHz) was reported as a row of

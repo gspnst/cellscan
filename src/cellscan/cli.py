@@ -286,16 +286,64 @@ def cmd_lte_scan(args) -> int:
         err.print("give --band, --earfcn or --iq")
         return 2
     backend = capture.open_backend(args.sdr, args.ppm)
+    on_capture = _debug_capture(args) if (args.debug or args.save_iq) else None
     with console.status("scanning…") as status:
         obs = lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr, max_cfo_hz=args.max_cfo * 1e3,
-                            progress=lambda i, n, f: status.update(f"[{i + 1}/{n}] {f:.1f} MHz"))
+                            progress=lambda i, n, f: status.update(f"[{i + 1}/{n}] {f:.1f} MHz"), on_capture=on_capture)
+    if args.debug:
+        console.print("[dim]How to read --debug: rms below about -40 dBFS → raise --gain; clipping above 1 % → lower "
+                      "--gain; best PSS below ~0.2 on every channel → no LTE sync there (wrong frequency, too weak, or "
+                      "not LTE); PSS ≥ 0.3 but SSS rejected → longer capture (--duration 0.08) or --max-cfo.[/]")
     if not obs:
-        err.print("[yellow]No LTE cell decoded. If the sweep shows carriers, the SDR's frequency error is the usual "
-                  "cause: retry with --max-cfo 60 or set --ppm.[/]")
-    console.print(observations_table(obs, f"LTE cells ({len(obs)})"))
+        err.print("[yellow]No LTE cell decoded. Rerun with --debug to see the capture level and the best sync "
+                  "candidates per channel (try --max-cfo 60 for RTL-SDRs without TCXO).[/]")
+    if obs:
+        console.print(sdr_lte_table(obs))
     if args.save and obs:
         console.print(f"saved to {save_observations(obs, args.save, make_position(args.gps))}")
     return 0
+
+
+def sdr_lte_table(obs: list[Observation]) -> Table:
+    t = Table(title=f"LTE cells decoded by the SDR ({len(obs)})", header_style="bold")
+    for col in ("EARFCN", "DL MHz", "Band", "PCI", "SNR", "Power", "Detail"):
+        t.add_column(col, no_wrap=col != "Detail")
+    for o in obs:
+        info = spectrum.channel_info(o.family, o.channel, o.mcc, o.band) if o.channel is not None else None
+        t.add_row(_s(o.channel), f"{info.dl_mhz:.1f}" if info and info.dl_mhz else "", (info.band_label if info else "") or "",
+                  _s(o.pci), f"{o.sinr:.1f} dB" if o.sinr is not None else "",
+                  f"{o.rel_power:.1f} dBFS" if o.rel_power is not None else "", o.notes or "")
+    return t
+
+
+def _debug_capture(args):
+    """Per-channel diagnostics for lte-scan: capture level and the best sync candidates, accepted or not."""
+    from .sdr import lte_sync
+
+    out_dir = Path(args.save_iq).expanduser() if args.save_iq else None
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    def hook(earfcn: int, mhz: float, x) -> None:
+        if out_dir:
+            path = out_dir / f"lte_{earfcn}_{mhz:.1f}MHz_1.92Msps.cf32"
+            path.write_bytes(np.asarray(x, dtype=np.complex64).tobytes())
+        if not args.debug:
+            return
+        st = lte_sync.capture_stats(x)
+        line = (f"EARFCN {earfcn} {mhz:.1f} MHz: {st['samples']} samples, rms {st['rms_dbfs']:.1f} dBFS, "
+                f"clip {st['clip_pct']:.2f} %, DC {st['dc_dbfs']:.1f} dBFS")
+        cands = lte_sync.candidates(x, args.max_cfo * 1e3, min_pss_metric=0.12)[:3]
+        if not cands:
+            line += " | no PSS peak ≥ 0.12"
+        for c in cands:
+            verdict = "[green]accepted[/]" if (c.nid1 is not None and c.sss_margin >= 1.6 and c.snr_db >= -12) else "[yellow]rejected[/]"
+            sss = (f"PCI {c.pci}, SSS margin {c.sss_margin:.2f}, SNR {c.snr_db:.1f} dB" if c.nid1 is not None
+                   else "no SSS")
+            line += f"\n    PSS {c.pss_metric:.2f} (N_ID_2 {c.nid2}, CFO {c.cfo_hz / 1e3:+.1f} kHz) → {sss} {verdict}"
+        console.print(line)
+
+    return hook
 
 
 def _guided_earfcns(args) -> list[int]:
@@ -554,6 +602,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--threshold", type=float, default=8.0, help="carrier detection threshold for --guided (dB)")
     sp.add_argument("--max-cfo", type=float, default=20.0,
                     help="frequency-offset search range in kHz (use 50-60 for RTL-SDR dongles without TCXO)")
+    sp.add_argument("--debug", action="store_true", help="print capture level and sync candidates per channel")
+    sp.add_argument("--save-iq", metavar="DIR", help="save each capture as .cf32 (1.92 Msps) for offline analysis")
     sp.add_argument("--iq", help="analyse an IQ recording (.cu8 .cs8 .cs16 .cf32)")
     sp.add_argument("--rate", default="1.92M", help="sample rate of --iq")
     sp.add_argument("--save", metavar="NAME")

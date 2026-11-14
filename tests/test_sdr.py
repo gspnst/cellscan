@@ -289,3 +289,20 @@ def test_dc_spike_removal_keeps_wide_signals():
     assert max(cleaned) == -60.0
     flat = [-40.0] * 32  # inside a carrier: unchanged level
     assert sweep._remove_dc_spike(flat) == flat
+
+
+def test_lte_scan_debug_and_save_iq(monkeypatch, capsys, tmp_path):
+    from cellscan import cli
+    from cellscan.sdr import capture
+
+    sdr = FakeSDR({6300: [120]})
+    monkeypatch.setattr(capture, "open_backend", lambda *a, **k: sdr)
+    rc = cli.main(["lte-scan", "--sdr", "rtlsdr", "--earfcn", "6299,6300", "--debug", "--save-iq", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "EARFCN 6300" in out and "rms" in out and "PCI 120" in out and "accepted" in out
+    saved = sorted(tmp_path.glob("*.cf32"))
+    assert [p.name.split("_")[1] for p in saved] == ["6299", "6300"]
+    # the saved capture can be re-analysed offline
+    assert cli.main(["lte-scan", "--iq", str(saved[1])]) == 0
+    assert "120" in capsys.readouterr().out
