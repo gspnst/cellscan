@@ -306,3 +306,41 @@ def test_lte_scan_debug_and_save_iq(monkeypatch, capsys, tmp_path):
     # the saved capture can be re-analysed offline
     assert cli.main(["lte-scan", "--iq", str(saved[1])]) == 0
     assert "120" in capsys.readouterr().out
+
+
+def test_e4000_wide_dc_spike_removed():
+    values = list(-35 + np.random.default_rng(3).normal(0, 0.3, 33))
+    for i in range(13, 20):  # 7 bins (~590 kHz) of DC spike
+        values[i] += 6
+    cleaned = sweep._remove_dc_spike(values, 84_000)
+    assert max(cleaned) < -33.5
+
+
+def test_rtl_clock_harmonic_is_flagged_not_lte():
+    # Real case: an E4000 RTL-SDR with no antenna signal; 806.4 MHz = 28 x 28.8 MHz clock harmonic looked like
+    # an LTE carrier at the centre of B20.
+    assert sweep.rtl_spur(806.455) == 28 and sweep.rtl_spur(806.0) is None
+    lo, hi = sweep.band_sweep_range("B20")
+    text = rtl_power_csv(lo, hi, lambda f: 19.0 if abs(f - 806.4e6) < 0.12e6 else 0.0, dc_spike_db=6)
+    carriers = sweep.detect_carriers(sweep.parse_power_csv(text), within_hz=sweep.band_range_hz("B20"))
+    assert [c.kind for c in carriers] == ["spur? 28.8×28"]
+    assert not any(c.family is Family.LTE for c in carriers)
+
+
+def fm_spectrum(lo, hi, stations):
+    freqs = np.arange(lo, hi, 50e3) + 25e3
+    p = -60 + np.random.default_rng(6).normal(0, 0.6, len(freqs))
+    for f0, level in stations:
+        p[np.abs(freqs - f0) < 90e3] += level
+    return sweep.Spectrum(freqs, p)
+
+
+def test_sdr_check(monkeypatch, capsys):
+    from cellscan import cli
+
+    monkeypatch.setattr(sweep, "run_sweep", lambda tool, lo, hi, b, g: fm_spectrum(lo, hi, [(89.1e6, 30), (95.4e6, 25), (101.3e6, 35), (104.9e6, 18)]))
+    assert cli.main(["sdr-check"]) == 0
+    assert "Receiver OK" in capsys.readouterr().out
+    monkeypatch.setattr(sweep, "run_sweep", lambda tool, lo, hi, b, g: fm_spectrum(lo, hi, []))
+    assert cli.main(["sdr-check"]) == 1
+    assert "Receiver problem" in capsys.readouterr().out

@@ -248,6 +248,9 @@ def cmd_sweep(args) -> int:
         spec = sweep.run_sweep(args.sdr.split(":")[0], lo, hi, parse_freq(args.bin), args.gain)
     carriers = sweep.detect_carriers(spec, args.threshold, args.mcc)
     console.print(spectrum_text(spec, carriers, width=min(console.width - 2, 160)))
+    if all(c.kind.startswith("spur") for c in carriers):
+        console.print("[yellow]No real carriers found (spurs are the SDR's own clock harmonics). Run `cellscan "
+                      "sdr-check` to test the receiver on FM broadcast, and try the antenna at a window.[/]")
     if args.save:
         obs = [Observation(radio=_radio_for(c), source="sweep", serving=False, channel=c.channel,
                            bandwidth_mhz=c.width_mhz, rel_power=round(c.peak_db, 1),
@@ -391,10 +394,34 @@ def _guided_earfcns(args) -> list[int]:
         p = spec.power_db
         console.print(f"[dim]sweep: {len(p)} bins, min {p.min():.1f} dB, median {float(np.median(p)):.1f} dB, "
                       f"max {p.max():.1f} dB – a flat spectrum (max − median < {args.threshold:.0f} dB) means nothing "
-                      f"strong was received: check antenna, --gain 40, or another band.[/]")
+                      f"strong was received. Run `cellscan sdr-check` to test the receiver on FM broadcast.[/]")
     # ±3 raster steps (±300 kHz): a lightly loaded carrier often shows only its central 1.4 MHz in a sweep,
     # so its estimated centre can be a few hundred kHz off.
     return lte_scan.candidate_earfcns([c.center_mhz for c in carriers], band=int(args.band.lstrip("Bb")), spread=3)
+
+
+def cmd_sdr_check(args) -> int:
+    """Receiver self-test on the FM broadcast band: strong stations almost everywhere, any antenna works."""
+    from .sdr import sweep
+    from .tui.app import spectrum_text
+
+    tool = args.sdr.split(":")[0]
+    with console.status("sweeping the FM band 87.5–108 MHz…"):
+        spec = sweep.run_sweep(tool, 87.5e6, 108e6, 50_000, args.gain)
+    carriers = [c for c in sweep.detect_carriers(spec, 10.0) if not c.kind.startswith("spur")]
+    stations = sorted((c for c in carriers if c.width_mhz <= 0.45), key=lambda c: -c.snr_db)
+    console.print(spectrum_text(spec, [], width=min(console.width - 2, 120)))
+    for c in stations[:8]:
+        console.print(f"  FM station? {c.center_mhz:7.2f} MHz  +{c.snr_db:.0f} dB")
+    strong = [c for c in stations if c.snr_db >= 15]
+    if len(strong) >= 3:
+        console.print(f"[green]Receiver OK:[/] {len(strong)} strong FM stations (best +{strong[0].snr_db:.0f} dB). "
+                      "If cellular bands still look flat, move the antenna to a window or outdoors.")
+        return 0
+    console.print("[red]Receiver problem:[/] no strong FM stations found. Check that the antenna is screwed on, try "
+                  "another USB port (avoid hubs and VM USB passthrough), and run `rtl_test` to check for lost samples. "
+                  "(In the few countries without FM broadcasting this test isn't meaningful.)")
+    return 1
 
 
 def cmd_gsm_scan(args) -> int:
@@ -616,6 +643,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--save", metavar="NAME")
     sp.add_argument("--gps", default="none")
     sp.set_defaults(func=cmd_sweep)
+
+    sp = sub.add_parser("sdr-check", help="receiver self-test: are FM broadcast stations received?")
+    sp.add_argument("--sdr", default="rtlsdr", help="rtlsdr | hackrf | soapy:<args>")
+    sp.add_argument("--gain", type=float, help="tuner gain in dB (default: auto)")
+    sp.set_defaults(func=cmd_sdr_check)
 
     sp = sub.add_parser("lte-scan", help="native LTE cell search (PSS/SSS) with an SDR or an IQ file")
     sdr_opts(sp)

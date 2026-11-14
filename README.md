@@ -97,11 +97,14 @@ Everything SDR-related works without a modem or GPS:
 
 ```sh
 cellscan doctor                                        # is the SDR detected?
+cellscan sdr-check                                     # does it receive? (FM broadcast stations, ≈5 s)
 cellscan sweep --sdr rtlsdr --band B20                 # which LTE carriers are on air (≈10 s)
 cellscan lte-scan --sdr rtlsdr --band B20 --guided     # sweep, then decode PCIs on those carriers
 cellscan monitor --source none --gps none --sdr rtlsdr --band B20   # dashboard: press s, then l
 ```
 
+- **Spurs:** RTL-SDRs leak harmonics of their 28.8 MHz clock (e.g. 806.4 MHz = 28 × 28.8 MHz, right in
+  B20). Sweeps label narrow signals at those frequencies `spur?` instead of reporting them as carriers.
 - **Band sweeps** cover the band plus a few MHz on each side, because carrier detection needs some unused
   spectrum to estimate the noise floor.
 - **Frequency error:** RTL-SDR dongles without a TCXO are often 50–100 ppm off. RTL-SDR scans therefore

@@ -56,7 +56,7 @@ def parse_power_csv(text: str) -> Spectrum:
             continue
         if step <= 0 or not values:
             continue
-        values = _remove_dc_spike(values)
+        values = _remove_dc_spike(values, step)
         for i, v in enumerate(values):
             f = f_low + (i + 0.5) * step
             if f <= f_high + step:
@@ -67,17 +67,28 @@ def parse_power_csv(text: str) -> Spectrum:
     return Spectrum(freqs, np.array([rows[f] for f in freqs]))
 
 
-def _remove_dc_spike(values: list[float]) -> list[float]:
-    """Each rtl_power hop shows the dongle's DC offset as a spike in its centre bin(s), which would look like
-    narrow carriers every hop (e.g. every 2.6 MHz). Replace the centre bin(s) with the surrounding level."""
+def _remove_dc_spike(values: list[float], step_hz: float = 100_000) -> list[float]:
+    """Each rtl_power hop shows the dongle's DC offset as a spike in its centre, which would look like narrow
+    carriers every hop (e.g. every 2.6 MHz). Its width depends on the tuner (wider on E4000 than R820T), so
+    the region is grown from the centre while it stays above the hop's median level (at most ±300 kHz) and
+    replaced with the level just outside it."""
     n = len(values)
     if n < 8:
         return values
-    centre = [n // 2] if n % 2 else [n // 2 - 1, n // 2]
-    lo, hi = centre[0] - 2, centre[-1] + 2
-    level = (values[lo] + values[hi]) / 2
+    arr = np.asarray(values, dtype=float)
+    median = float(np.median(arr))
+    lo = n // 2 - 1 if n % 2 == 0 else n // 2
+    hi = n // 2
+    max_half = max(1, int(np.ceil(300e3 / max(step_hz, 1.0))))
+    # always cover the centre bin(s) plus one leakage bin each side, then grow while above the hop median
+    lo, hi = max(lo - 1, 1), min(hi + 1, n - 2)
+    while lo > 1 and n // 2 - lo < max_half and arr[lo - 1] > median + 1.0:
+        lo -= 1
+    while hi < n - 2 and hi - n // 2 < max_half and arr[hi + 1] > median + 1.0:
+        hi += 1
+    level = (arr[lo - 1] + arr[hi + 1]) / 2
     out = list(values)
-    for i in range(centre[0] - 1, centre[-1] + 2):  # centre bin(s) plus one leakage bin on each side
+    for i in range(lo, hi + 1):
         out[i] = level
     return out
 
@@ -214,8 +225,22 @@ def _split_wide(spec: Spectrum, smooth: np.ndarray, a: int, b: int) -> list[tupl
     return out
 
 
+RTL_XTAL_MHZ = 28.8
+
+
+def rtl_spur(center_mhz: float, tolerance_mhz: float = 0.15) -> int | None:
+    """Harmonic number if the frequency is a multiple of the RTL-SDR's 28.8 MHz crystal (internal spur)."""
+    n = round(center_mhz / RTL_XTAL_MHZ)
+    return n if n > 0 and abs(center_mhz - n * RTL_XTAL_MHZ) <= tolerance_mhz else None
+
+
 def classify(center_mhz: float, width_mhz: float, peak_db: float, snr_db: float, mcc: int | None = None) -> Carrier:
     c = Carrier(round(center_mhz, 3), round(width_mhz, 2), peak_db, snr_db, "narrowband")
+    if width_mhz < 0.45 and (n := rtl_spur(center_mhz)) is not None:
+        # RTL-SDRs leak harmonics of their 28.8 MHz clock (e.g. 806.4 MHz = 28 × 28.8): almost never a real
+        # transmitter, but marked with "?" since a real narrow carrier can coincide.
+        c.kind = f"spur? 28.8×{n}"
+        return c
     if width_mhz < 0.45:
         arfcn = spectrum.gsm_arfcn_for_dl(round(center_mhz * 5) / 5, mcc)
         if arfcn is not None:

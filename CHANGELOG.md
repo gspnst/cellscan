@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6
+
+- `cellscan sdr-check`: receiver self-test on the FM broadcast band (strong stations, any antenna).
+- Sweeps label narrow signals at multiples of the RTL-SDR's 28.8 MHz clock as `spur?` – 806.4 MHz
+  (28 × 28.8) sits in the middle of B20 and had been mistaken for an LTE carrier.
+- DC-spike removal adapts to the spike's width (wider on E4000 tuners than on R820T).
+- Empty sweeps point to `sdr-check`.
+
 ## 0.1.5
 
 - Fix: LTE cell search failed on RTL-SDRs with large crystal errors. The LO and the sample clock share one
