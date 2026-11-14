@@ -226,7 +226,7 @@ def sdr_callbacks(args):
     def do_scan(carriers):
         backend = capture.open_backend(args.sdr, args.ppm)
         lte = [c for c in carriers if c.family is Family.LTE]
-        earfcns = lte_scan.candidate_earfcns([c.center_mhz for c in lte], spread=1) if lte else \
+        earfcns = lte_scan.candidate_earfcns([c.center_mhz for c in lte], spread=3) if lte else \
             lte_scan.earfcns_for_band(int(args.band.lstrip("Bb")), step=5) if args.band and not args.band.lower().startswith("n") else []
         return lte_scan.scan(backend, earfcns, args.duration, args.gain, device=args.sdr,
                              max_cfo_hz=args.max_cfo * 1e3)
@@ -321,7 +321,9 @@ def _guided_earfcns(args) -> list[int]:
         console.print(f"[dim]sweep: {len(p)} bins, min {p.min():.1f} dB, median {float(np.median(p)):.1f} dB, "
                       f"max {p.max():.1f} dB – a flat spectrum (max − median < {args.threshold:.0f} dB) means nothing "
                       f"strong was received: check antenna, --gain 40, or another band.[/]")
-    return lte_scan.candidate_earfcns([c.center_mhz for c in carriers], band=int(args.band.lstrip("Bb")), spread=1)
+    # ±3 raster steps (±300 kHz): a lightly loaded carrier often shows only its central 1.4 MHz in a sweep,
+    # so its estimated centre can be a few hundred kHz off.
+    return lte_scan.candidate_earfcns([c.center_mhz for c in carriers], band=int(args.band.lstrip("Bb")), spread=3)
 
 
 def cmd_gsm_scan(args) -> int:

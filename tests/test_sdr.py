@@ -185,7 +185,7 @@ def test_guided_lte_scan_cli(monkeypatch, capsys):
     monkeypatch.setattr(sweep, "run_sweep", lambda *a, **k: sweep.Spectrum(freqs, p))
     monkeypatch.setattr(capture, "open_backend", lambda *a, **k: sdr)
     assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 0
-    assert sorted(sdr.tuned) == [6299, 6300, 6301]  # only the carrier found by the sweep was searched
+    assert sorted(sdr.tuned) == list(range(6297, 6304))  # only around the carrier found by the sweep (±3)
     out = capsys.readouterr().out
     assert "806.0 MHz" in out and "120" in out
 
@@ -241,7 +241,7 @@ def test_guided_scan_on_full_band(monkeypatch, capsys):
     monkeypatch.setattr(capture, "open_backend", lambda *a, **k: sdr)
     assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 0
     assert swept["range"][0] < 791e6 and swept["range"][1] > 821e6
-    assert sorted(sdr.tuned) == [6199, 6200, 6201, 6299, 6300, 6301, 6399, 6400, 6401]
+    assert sorted(sdr.tuned) == [e for c in (6200, 6300, 6400) for e in range(c - 3, c + 4)]
     out = capsys.readouterr().out
     assert all(str(p) in out for p in (33, 120, 401))
 
@@ -253,3 +253,39 @@ def test_guided_scan_reports_flat_spectrum(monkeypatch, capsys):
     assert cli.main(["lte-scan", "--sdr", "rtlsdr", "--band", "B20", "--guided"]) == 1
     captured = capsys.readouterr()
     assert "flat spectrum" in captured.out and "no LTE carriers" in captured.err
+
+
+def rtl_power_csv(start, stop, signal, hop=2.647e6, bins=32, dc_spike_db=9.0, seed=0):
+    """CSV text the way rtl_power prints it: one line per hop, DC spike in each hop's centre bins."""
+    rng = np.random.default_rng(seed)
+    lines, f0 = [], start
+    while f0 < stop:
+        step = hop / bins
+        freqs = f0 + (np.arange(bins) + 0.5) * step
+        values = -70 + rng.normal(0, 0.7, bins) + np.array([signal(f) for f in freqs])
+        values[bins // 2 - 1 : bins // 2 + 1] += dc_spike_db
+        lines.append(f"2026-11-14, 18:50:00, {int(f0)}, {int(f0 + hop)}, {step:.2f}, 40, " + ", ".join(f"{v:.2f}" for v in values))
+        f0 += hop
+    return "\n".join(lines) + "\n"
+
+
+def test_rtl_power_dc_spikes_are_not_carriers():
+    # Real-world case: B20 sweep where only the central 1.4 MHz of a lightly loaded carrier at 806.0 MHz
+    # stands out, and rtl_power's DC spike sits near it.
+    lo, hi = sweep.band_sweep_range("B20")
+    text = rtl_power_csv(lo, hi, lambda f: 20.0 if abs(f - 806.0e6) < 0.6e6 else 0.0)
+    spec = sweep.parse_power_csv(text)
+    carriers = sweep.detect_carriers(spec, mcc=230)
+    assert len(carriers) == 1, [c.describe() for c in carriers]
+    c = carriers[0]
+    assert c.family is Family.LTE and abs(c.center_mhz - 806.0) < 0.15
+    assert 6300 in lte_scan.candidate_earfcns([c.center_mhz], band=20, spread=3)
+
+
+def test_dc_spike_removal_keeps_wide_signals():
+    values = [-60.0] * 32
+    values[15] = values[16] = -45.0  # spike
+    cleaned = sweep._remove_dc_spike(values)
+    assert max(cleaned) == -60.0
+    flat = [-40.0] * 32  # inside a carrier: unchanged level
+    assert sweep._remove_dc_spike(flat) == flat

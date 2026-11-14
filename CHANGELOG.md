@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Fix: rtl_power's DC spike at the centre of every hop (every ~2.6 MHz) was reported as a row of
+  "narrowband" carriers and could shift a nearby LTE carrier's estimated centre. Sweep parsing now removes it.
+- Guided LTE scan searches ±3 raster steps (±300 kHz) around each carrier, since lightly loaded carriers
+  show only their central 1.4 MHz and their centre estimate can be a few hundred kHz off.
+
 ## 0.1.2
 
 - Fix: `lte-scan --guided` and `sweep --band` found no carriers when LTE filled the whole band (e.g. B20 in

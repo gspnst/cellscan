@@ -56,6 +56,7 @@ def parse_power_csv(text: str) -> Spectrum:
             continue
         if step <= 0 or not values:
             continue
+        values = _remove_dc_spike(values)
         for i, v in enumerate(values):
             f = f_low + (i + 0.5) * step
             if f <= f_high + step:
@@ -64,6 +65,21 @@ def parse_power_csv(text: str) -> Spectrum:
         raise SweepError("no sweep data parsed")
     freqs = np.array(sorted(rows))
     return Spectrum(freqs, np.array([rows[f] for f in freqs]))
+
+
+def _remove_dc_spike(values: list[float]) -> list[float]:
+    """Each rtl_power hop shows the dongle's DC offset as a spike in its centre bin(s), which would look like
+    narrow carriers every hop (e.g. every 2.6 MHz). Replace the centre bin(s) with the surrounding level."""
+    n = len(values)
+    if n < 8:
+        return values
+    centre = [n // 2] if n % 2 else [n // 2 - 1, n // 2]
+    lo, hi = centre[0] - 2, centre[-1] + 2
+    level = (values[lo] + values[hi]) / 2
+    out = list(values)
+    for i in range(centre[0] - 1, centre[-1] + 2):  # centre bin(s) plus one leakage bin on each side
+        out[i] = level
+    return out
 
 
 def run_sweep(tool: str, start_hz: float, stop_hz: float, bin_hz: float = 100_000, gain: float | None = None,
